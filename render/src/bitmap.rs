@@ -18,7 +18,16 @@ impl PartialEq for BitmapHandle {
     }
 }
 
-pub trait BitmapHandleImpl: Any + Debug {}
+pub trait BitmapHandleImpl: Any + Debug {
+    /// Whether the GPU texture behind this handle is still live.
+    ///
+    /// Memory-constrained backends may evict textures; `BitmapCharacter`
+    /// re-registers dead handles on next use. Defaults to always live,
+    /// preserving existing behavior for all other backends.
+    fn is_alive(&self) -> bool {
+        true
+    }
+}
 
 /// Info returned by the `register_bitmap` methods.
 #[derive(Clone, Debug)]

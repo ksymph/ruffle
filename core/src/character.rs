@@ -1,4 +1,4 @@
-use std::cell::OnceCell;
+use std::cell::RefCell;
 
 use crate::backend::audio::SoundHandle;
 use crate::binary_data::BinaryData;
@@ -10,7 +10,7 @@ use gc_arena::barrier::unlock;
 use gc_arena::lock::Lock;
 use gc_arena::{Collect, Gc, Mutation};
 use ruffle_render::backend::RenderBackend;
-use ruffle_render::bitmap::{Bitmap as RenderBitmap, BitmapHandle, BitmapSize};
+use ruffle_render::bitmap::{Bitmap as RenderBitmap, BitmapHandle, BitmapHandleImpl, BitmapSize};
 use ruffle_render::error::Error as RenderError;
 use swf::DefineBitsLossless;
 
@@ -36,9 +36,12 @@ pub enum Character<'gc> {
 pub struct BitmapCharacter<'gc> {
     #[collect(require_static)]
     compressed: CompressedBitmap,
-    /// A lazily constructed GPU handle, used when performing fills with this bitmap
+    /// A lazily constructed GPU handle, used when performing fills with this bitmap.
+    /// Backends under memory pressure may evict the GPU texture behind a
+    /// handle (see `BitmapHandleImpl::is_alive`); a dead cached handle is
+    /// transparently re-registered on next use.
     #[collect(require_static)]
-    handle: OnceCell<BitmapHandle>,
+    handle: RefCell<Option<BitmapHandle>>,
     /// The bitmap class set by `SymbolClass` - this is used when we instantaite
     /// a `Bitmap` displayobject.
     avm2_class: Lock<BitmapClass<'gc>>,
@@ -48,7 +51,7 @@ impl<'gc> BitmapCharacter<'gc> {
     pub fn new(compressed: CompressedBitmap) -> Self {
         Self {
             compressed,
-            handle: OnceCell::default(),
+            handle: RefCell::new(None),
             avm2_class: Lock::new(BitmapClass::NoSubclass),
         }
     }
@@ -70,13 +73,16 @@ impl<'gc> BitmapCharacter<'gc> {
         backend: &mut dyn RenderBackend,
     ) -> Result<BitmapHandle, RenderError> {
         // FIXME - use `OnceCell::get_or_try_init` when stabilized.
-        if let Some(handle) = self.handle.get() {
-            return Ok(handle.clone());
+        if let Some(handle) = self.handle.borrow().as_ref() {
+            if handle.0.is_alive() {
+                return Ok(handle.clone());
+            }
+            // The backend evicted this texture under memory pressure;
+            // fall through and re-register it below.
         }
         let decoded = self.compressed.decode()?;
         let new_handle = backend.register_bitmap(decoded)?;
-        // FIXME - do we ever want to release this handle, to avoid taking up GPU memory?
-        self.handle.set(new_handle.clone()).unwrap();
+        *self.handle.borrow_mut() = Some(new_handle.clone());
         Ok(new_handle)
     }
 }
