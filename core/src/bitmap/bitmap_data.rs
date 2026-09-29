@@ -791,8 +791,21 @@ impl<'gc> BitmapRawData<'gc> {
         &mut self,
         renderer: &mut dyn RenderBackend,
     ) -> Result<BitmapHandle, ruffle_render::error::Error> {
+        // Like `BitmapCharacter::bitmap_handle`: the backend may have evicted
+        // the GPU texture behind a cached handle under memory pressure
+        // (see `BitmapHandleImpl::is_alive`); a dead cached handle is
+        // transparently re-registered below instead of being handed out,
+        // otherwise evicted `Bitmap` display objects would stay invisible
+        // forever. Re-registration uploads the full current CPU pixels, so
+        // the fresh texture is complete and `dirty_state` is clean.
+        // NOTE: if the bitmap was `GpuModified`, the CPU pixels are stale
+        // (the live content died with the evicted texture). We still
+        // re-register so *something* draws; ruffle's dirty tracking will
+        // re-upload on the next CPU write.
         if let Some(ref handle) = self.bitmap_handle {
-            return Ok(handle.clone());
+            if handle.0.is_alive() {
+                return Ok(handle.clone());
+            }
         }
 
         let bitmap = Bitmap::new(
